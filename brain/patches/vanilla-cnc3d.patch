@@ -1,0 +1,1343 @@
+diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
+index eada872..68d59b3 100644
+--- a/common/CMakeLists.txt
++++ b/common/CMakeLists.txt
+@@ -1,3 +1,9 @@
++#
++# MODIFIED for C&C 3D in August 2026. This is not EA's original file.
++# The change is additive and does not alter the game simulation; the complete
++# diff against upstream is brain/patches/vanilla-cnc3d.patch, and NOTICE.md
++# lists every modified file.
++#
+ # Embed some git version information in the binary.
+ set(GIT_PRE_CONFIGURE_FILE "gitinfo.cpp.in")
+ set(GIT_POST_CONFIGURE_FILE "${CMAKE_CURRENT_BINARY_DIR}/gitinfo.cpp")
+@@ -112,9 +118,18 @@ set(COMMONR_SRC
+     soundio_null.cpp
+     video_null.cpp
+     wwkeyboard.cpp
+-    wwkeyboard_win32.cpp
+     wwmouse.cpp
+ )
++# CNC3D: the remaster lib is already headless (soundio_null/video_null); the only
++# platform dependency left was wwkeyboard_win32.cpp, which cannot compile off Windows.
++# The remaster DLL takes all input through CNC_Handle_Input(), so a null keyboard is
++# correct AND keeps the brain free of SDL -- important because these same sources must
++# cross-compile to 32-bit Windows for the Win98 target later.
++if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Windows")
++    list(APPEND COMMONR_SRC wwkeyboard_win32.cpp)
++else()
++    list(APPEND COMMONR_SRC wwkeyboard_null.cpp)
++endif()
+ 
+ set(COMMONV_SRC
+     framelimit.cpp
+diff --git a/common/load.cpp b/common/load.cpp
+index b3bbb7a..1133fa3 100644
+--- a/common/load.cpp
++++ b/common/load.cpp
+@@ -12,6 +12,12 @@
+ // distributed with this program. You should have received a copy of the
+ // GNU General Public License along with permitted additional restrictions
+ // with this program. If not, see https://github.com/electronicarts/CnC_Remastered_Collection
++//
++// MODIFIED for C&C 3D in August 2026. This is not EA's original file.
++// The change is additive and does not alter the game simulation; the complete
++// diff against upstream is brain/patches/vanilla-cnc3d.patch, and NOTICE.md
++// lists every modified file.
++//
+ 
+ /* $Header: g:/library/wwlib32/file/rcs/load.cpp 1.4 1994/04/22 12:42:21 scott_bowen Exp $ */
+ /***************************************************************************
+@@ -166,6 +172,26 @@ void* Load_Alloc_Data(const FileClass& file)
+     void* ptr = 0;
+     int size = const_cast<FileClass&>(file).Size();
+ 
++    /* CNC3D: a file that is neither on disk nor inside a registered mixfile reports a size
++    ** of ZERO rather than failing. CCFileClass::Size() (ccfile.cpp) returns a length that
++    ** MixFileClass::Offset never writes when it does not find the entry, and its only
++    ** diagnostic is an assert(1) that cannot fire. malloc(0) then hands back a valid
++    ** non-null pointer to no usable bytes, and every caller here treats non-null as a
++    ** successful load.
++    **
++    ** Set_Font (common/font.cpp) is the one that dies of it: its only guard is
++    ** "if (fontptr)", so it accepts the empty block, reads a 16-bit block offset out of it,
++    ** and dereferences fontptr + that offset, up to 64KB past a zero-byte allocation. Whether
++    ** that address is on a committed page varies per launch, which is an intermittent
++    ** SIGSEGV on the title screen's version print and nowhere else.
++    **
++    ** NULL is the failure value every caller on this path already handles, because it is
++    ** what the MFCD::Retrieve fonts return when they are absent.
++    */
++    if (size <= 0) {
++        return (0);
++    }
++
+     ptr = malloc(size);
+     if (ptr) {
+         const_cast<FileClass&>(file).Read(ptr, size);
+diff --git a/tiberiandawn/CMakeLists.txt b/tiberiandawn/CMakeLists.txt
+index a26cf46..940aee7 100644
+--- a/tiberiandawn/CMakeLists.txt
++++ b/tiberiandawn/CMakeLists.txt
+@@ -1,3 +1,9 @@
++#
++# MODIFIED for C&C 3D in August 2026. This is not EA's original file.
++# The change is additive and does not alter the game simulation; the complete
++# diff against upstream is brain/patches/vanilla-cnc3d.patch, and NOTICE.md
++# lists every modified file.
++#
+ set(TIBDAWN_SRC
+     aadata.cpp
+     abstract.cpp
+@@ -158,6 +164,27 @@ endif()
+ 
+ include(ProductVersion)
+ 
++# CNC3D: dllinterface.{h,cpp} (the CNC_* API) is written for MSVC and uses __int64,
++# __declspec and types declared inside anonymous unions. Clang/GCC accept all of that
++# with the Microsoft-extension flags, so the API compiles unmodified off Windows.
++# Keeping the source untouched matters: it must still build for 32-bit Windows later.
++if(BUILD_REMASTERTD AND NOT MSVC)
++    set(CNC3D_MS_FLAGS -fms-extensions)
++    include(CheckCXXCompilerFlag)
++    check_cxx_compiler_flag(-fdeclspec CNC3D_HAS_FDECLSPEC)
++    if(CNC3D_HAS_FDECLSPEC)
++        list(APPEND CNC3D_MS_FLAGS -fdeclspec)
++    endif()
++endif()
++
++# CNC3D: the map-editor interface is COM-based (SAFEARRAY/HRESULT/VT_UI1) and is
++# Windows-only. The headless brain does not need it, so it is dropped off Windows.
++if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Windows")
++    set(CNC3D_EDITOR_IFACE dllinterfaceeditor.cpp)
++else()
++    set(CNC3D_EDITOR_IFACE "")
++endif()
++
+ if(BUILD_REMASTERTD)
+     if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Windows")
+         # Generate windows version info.
+@@ -175,13 +202,17 @@ if(BUILD_REMASTERTD)
+     endif()
+     add_library(TiberianDawn SHARED 
+         dllinterface.cpp
+-        dllinterfaceeditor.cpp
++        ${CNC3D_EDITOR_IFACE}
+         sidebarglyphx.cpp
+         ${TIBDAWN_SRC}
+         ${TIBDAWN_HEADERS}
+         ${REMASTERTD_RC}
+     )
+     target_compile_definitions(TiberianDawn PUBLIC $<$<CONFIG:Debug>:_DEBUG> ${REMASTER_DEFS} MEGAMAPS)
++    if(CNC3D_MS_FLAGS)
++        target_compile_options(TiberianDawn PRIVATE ${CNC3D_MS_FLAGS})
++        target_compile_options(commonr PRIVATE ${CNC3D_MS_FLAGS})
++    endif()
+     target_include_directories(TiberianDawn PUBLIC ${CMAKE_SOURCE_DIR} .)
+     target_link_libraries(TiberianDawn commonr ${REMASTER_LIBS} ${STATIC_LIBS})
+     set_target_properties(TiberianDawn PROPERTIES PREFIX "")
+diff --git a/tiberiandawn/anim.h b/tiberiandawn/anim.h
+index ae48da8..8dff18b 100644
+--- a/tiberiandawn/anim.h
++++ b/tiberiandawn/anim.h
+@@ -12,6 +12,12 @@
+ // distributed with this program. You should have received a copy of the
+ // GNU General Public License along with permitted additional restrictions
+ // with this program. If not, see https://github.com/electronicarts/CnC_Remastered_Collection
++//
++// MODIFIED for C&C 3D in August 2026. This is not EA's original file.
++// The change is additive and does not alter the game simulation; the complete
++// diff against upstream is brain/patches/vanilla-cnc3d.patch, and NOTICE.md
++// lists every modified file.
++//
+ 
+ /* $Header:   F:\projects\c&c\vcs\code\anim.h_v   2.20   16 Oct 1995 16:45:40   JOE_BOSTIC  $ */
+ /***********************************************************************************************
+@@ -100,6 +106,15 @@ public:
+         KillTime = kill_time;
+     }
+ 
++    /*
++    ** CNC3D instrumentation (read-only). The StageClass base is private, so the object
++    ** dump cannot ask an anim which frame it is on without this. No behaviour change.
++    */
++    int CNC3D_Stage(void) const
++    {
++        return StageClass::Fetch_Stage();
++    };
++
+     /*
+     ** 2019/09/19 JAS
+     ** Added functions for accessing which players can see this anim
+diff --git a/tiberiandawn/bbdata.cpp b/tiberiandawn/bbdata.cpp
+index e0b6db8..dc862a7 100644
+--- a/tiberiandawn/bbdata.cpp
++++ b/tiberiandawn/bbdata.cpp
+@@ -12,6 +12,12 @@
+ // distributed with this program. You should have received a copy of the
+ // GNU General Public License along with permitted additional restrictions
+ // with this program. If not, see https://github.com/electronicarts/CnC_Remastered_Collection
++//
++// MODIFIED for C&C 3D in August 2026. This is not EA's original file.
++// The change is additive and does not alter the game simulation; the complete
++// diff against upstream is brain/patches/vanilla-cnc3d.patch, and NOTICE.md
++// lists every modified file.
++//
+ 
+ /* $Header:   F:\projects\c&c\vcs\code\bbdata.cpv   2.17   16 Oct 1995 16:49:46   JOE_BOSTIC  $ */
+ /***********************************************************************************************
+@@ -169,7 +175,13 @@ static BulletTypeClass const ClassMissile(BULLET_SSM,
+                                           MPH_ROCKET, // SPEED:		Miles per hour.
+                                           5,          // ROT:			Rate of turn (degrees per tick).
+                                           WARHEAD_HE, // WARHEAD:		If fires weapon, warhead type
+-                                          ANIM_FRAG1  // Explosion to use upon impact.
++                                          ANIM_ART_EXP1  // Explosion to use upon impact. CNC3D: the CARTRIDGE'S own bullet
++                                          // table (ROM 0x169360, rec byte +0x23) points BULLET_SSM here,
++                                          // away from the 1995 chunk-throwing anim, so an IMPACT sprays no
++                                          // debris meshes. Deaths still do -- the cartridge's unit table
++                                          // keeps FRAG1/FRAG2 as every vehicle's death explosion.
++
++
+ );
+ 
+ static BulletTypeClass const ClassMissile2(BULLET_SSM2,
+@@ -191,7 +203,13 @@ static BulletTypeClass const ClassMissile2(BULLET_SSM2,
+                                            MPH_ROCKET, // SPEED:		Miles per hour.
+                                            7,          // ROT:			Rate of turn (degrees per tick).
+                                            WARHEAD_HE, // WARHEAD:		If fires weapon, warhead type
+-                                           ANIM_FRAG1  // Explosion to use upon impact.
++                                           ANIM_ART_EXP1  // Explosion to use upon impact. CNC3D: the CARTRIDGE'S own bullet
++                                          // table (ROM 0x169360, rec byte +0x23) points BULLET_SSM2 here,
++                                          // away from the 1995 chunk-throwing anim, so an IMPACT sprays no
++                                          // debris meshes. Deaths still do -- the cartridge's unit table
++                                          // keeps FRAG1/FRAG2 as every vehicle's death explosion.
++
++
+ );
+ 
+ static BulletTypeClass const ClassPatriot(BULLET_SAM,
+@@ -323,7 +341,13 @@ static BulletTypeClass const ClassGrenade(BULLET_GRENADE,
+                                           MPH_MEDIUM_SLOW, // SPEED:		Miles per hour.
+                                           0,               // ROT:			Rate of turn (degrees per tick).
+                                           WARHEAD_HE,      // WARHEAD:		If fires weapon, warhead type
+-                                          ANIM_VEH_HIT2    // Explosion to use upon impact.
++                                          ANIM_GRENADE    // Explosion to use upon impact. CNC3D: the CARTRIDGE'S own bullet
++                                          // table (ROM 0x169360, rec byte +0x23) points BULLET_GRENADE here,
++                                          // away from the 1995 chunk-throwing anim, so an IMPACT sprays no
++                                          // debris meshes. Deaths still do -- the cartridge's unit table
++                                          // keeps FRAG1/FRAG2 as every vehicle's death explosion.
++
++
+ );
+ 
+ static BulletTypeClass const ClassLaser(BULLET_LASER,
+@@ -367,7 +391,13 @@ static BulletTypeClass const ClassNukeUp(BULLET_NUKE_UP,
+                                          MPH_VERY_FAST, // SPEED:		Miles per hour.
+                                          0,             // ROT:			Rate of turn (degrees per tick).
+                                          WARHEAD_HE,    // WARHEAD:		If fires weapon, warhead type
+-                                         ANIM_FRAG1     // Explosion to use upon impact.
++                                         ANIM_ART_EXP1     // Explosion to use upon impact. CNC3D: the CARTRIDGE'S own bullet
++                                          // table (ROM 0x169360, rec byte +0x23) points BULLET_NUKE_UP here,
++                                          // away from the 1995 chunk-throwing anim, so an IMPACT sprays no
++                                          // debris meshes. Deaths still do -- the cartridge's unit table
++                                          // keeps FRAG1/FRAG2 as every vehicle's death explosion.
++
++
+ );
+ 
+ static BulletTypeClass const ClassNukeDown(BULLET_NUKE_DOWN,
+diff --git a/tiberiandawn/bullet.h b/tiberiandawn/bullet.h
+index 0d46e99..1b5f22e 100644
+--- a/tiberiandawn/bullet.h
++++ b/tiberiandawn/bullet.h
+@@ -12,6 +12,12 @@
+ // distributed with this program. You should have received a copy of the
+ // GNU General Public License along with permitted additional restrictions
+ // with this program. If not, see https://github.com/electronicarts/CnC_Remastered_Collection
++//
++// MODIFIED for C&C 3D in August 2026. This is not EA's original file.
++// The change is additive and does not alter the game simulation; the complete
++// diff against upstream is brain/patches/vanilla-cnc3d.patch, and NOTICE.md
++// lists every modified file.
++//
+ 
+ /* $Header:   F:\projects\c&c\vcs\code\bullet.h_v   2.18   16 Oct 1995 16:47:40   JOE_BOSTIC  $ */
+ /***********************************************************************************************
+@@ -139,6 +145,16 @@ public:
+     */
+     unsigned IsInaccurate : 1;
+ 
++    /*
++    ** CNC3D instrumentation (read-only): the projectile's render height in leptons,
++    ** private below. The object dump reports it so an arcing grenade can be drawn
++    ** off the ground. No behaviour change.
++    */
++    int CNC3D_Altitude(void) const
++    {
++        return Altitude;
++    };
++
+ private:
+     // Crude animation flag.
+     unsigned IsToAnimate : 1;
+diff --git a/tiberiandawn/dialog.cpp b/tiberiandawn/dialog.cpp
+index b20427a..5978ab7 100644
+--- a/tiberiandawn/dialog.cpp
++++ b/tiberiandawn/dialog.cpp
+@@ -12,6 +12,12 @@
+ // distributed with this program. You should have received a copy of the
+ // GNU General Public License along with permitted additional restrictions
+ // with this program. If not, see https://github.com/electronicarts/CnC_Remastered_Collection
++//
++// MODIFIED for C&C 3D in August 2026. This is not EA's original file.
++// The change is additive and does not alter the game simulation; the complete
++// diff against upstream is brain/patches/vanilla-cnc3d.patch, and NOTICE.md
++// lists every modified file.
++//
+ 
+ /* $Header:   F:\projects\c&c\vcs\code\dialog.cpv   2.17   16 Oct 1995 16:51:50   JOE_BOSTIC  $ */
+ /***********************************************************************************************
+@@ -550,6 +556,21 @@ void Simple_Text_Print(char const* text, unsigned x, unsigned y, unsigned fore,
+     */
+     FontXSpacing = xspace;
+     FontYSpacing = yspace;
++
++    /* CNC3D: with no content root registered at CNC_Init time, NONE of the engine's fonts
++    ** load, so every Font*Ptr here is null. Drawing text without a font is not survivable
++    ** further down: Set_Font would leave FontWidthBlockPtr stale, and Char_Pixel_Width
++    ** dereferences it per character. There is nothing to draw and nothing to measure, so
++    ** say so here, once, rather than in each of the four routines below.
++    **
++    ** This matters only on the engine's own legacy title screen and main menu, which the
++    ** DLL still runs during startup. Every pixel of text CNC3D actually shows is drawn by
++    ** the renderer from its own baked DOS fonts, never by this path.
++    */
++    if (font == NULL) {
++        return;
++    }
++
+     Set_Font(font);
+     Set_Font_Palette(fontpalette);
+ 
+diff --git a/tiberiandawn/dllinterface.cpp b/tiberiandawn/dllinterface.cpp
+index 383e098..5ee9a56 100644
+--- a/tiberiandawn/dllinterface.cpp
++++ b/tiberiandawn/dllinterface.cpp
+@@ -12,6 +12,12 @@
+ // distributed with this program. You should have received a copy of the
+ // GNU General Public License along with permitted additional restrictions
+ // with this program. If not, see https://github.com/electronicarts/CnC_Remastered_Collection
++//
++// MODIFIED for C&C 3D in August 2026. This is not EA's original file.
++// The change is additive and does not alter the game simulation; the complete
++// diff against upstream is brain/patches/vanilla-cnc3d.patch, and NOTICE.md
++// lists every modified file.
++//
+ 
+ /*
+ ** DLLInterfac.cpp
+@@ -24,6 +30,7 @@
+ **
+ */
+ 
++#include "cnc3d_compat.h"   // CNC3D: Win32 shims for non-Windows builds
+ #include <stdio.h>
+ 
+ #include "function.h"
+@@ -785,6 +792,39 @@ extern "C" __declspec(dllexport) bool __cdecl CNC_Clear_Object_Selection(uint64
+ 
+     Unselect_All();
+ 
++    /* CNC3D: RESTORE THE AllowVoice INVARIANT AT THE GESTURE BOUNDARY.
++     *
++     * AllowVoice is the 1995 engine's "one voice per user gesture" latch: TRUE at rest,
++     * a batch sets it false after the first object speaks, and the batch restores it on
++     * the way out (display.cpp:3027+3134 Select_These, display.cpp:3940+3955
++     * TacticalClass::Action).
++     *
++     * CNC_Select_Object breaks that. All four of its arms set AllowVoice = false after
++     * Select() and NOTHING in the export layer ever sets it back, so the first unit you
++     * click in a session says "awaiting orders" and every unit after it is mute for the
++     * rest of the run. It comes back only by accident, through a right-click order,
++     * because TacticalClass::Action happens to set it true on its way in. Confirmed by
++     * reading the flag out of the running process under a debugger across a click,
++     * click, click, order, click sequence: 1, 0, 0, then 1 again after the order.
++     * The same latch also mutes the move acknowledgement (techno.cpp:2543,
++     * foot.cpp:1324), which survives today only because the order path resets it.
++     *
++     * The other two reset sites are unreachable in this build: Select_These is only
++     * reached through INPUT_REQUEST_MOUSE_AREA, which cnc_eyes deliberately does not use
++     * (it band-selects against drawn silhouettes instead), and Handle_Team only through
++     * the control-group exports, which cnc_eyes never binds.
++     *
++     * Resetting HERE rather than inside CNC_Select_Object is what preserves the original
++     * semantics instead of merely un-muting: cnc_eyes clears the selection once at the
++     * start of every click and every band-drag, then calls CNC_Select_Object once per
++     * object. So a single click speaks once, and a band that selects twelve units also
++     * speaks once -- which is exactly what the 1995 batch loop does. Resetting per
++     * Select_Object call would make a band-select shout twelve times.
++     *
++     * Registered deviation: a SHIFT-click that adds to an existing selection does not
++     * clear first, so it stays mute where 1995 would speak. */
++    AllowVoice = true;
++
+     return true;
+ }
+ 
+@@ -7718,4 +7758,928 @@ void DLL_Code_Pointers(void)
+ void DLL_Decode_Pointers(void)
+ {
+     DLLExportClass::Decode_Pointers();
+-}
+\ No newline at end of file
++}
++/**************************************************************************************************
++ * CNC3D_Dump_Objects -- TEMPORARY INSTRUMENTATION (project CNC3D).
++ *
++ * Walks the engine's real object heaps (Infantry/Units/Buildings/Terrains) and prints
++ * type, owner, cell, health for every live object. Unlike GAME_STATE_LAYERS this does
++ * NOT go through the Draw_It intercept, so it works with no art loaded.
++ * Output is one machine-readable line per object on stdout, prefixed "OBJ|".
++ **************************************************************************************************/
++static void CNC3D_Print_One(const char* kind, ObjectClass* obj, int heapid)
++{
++    if (obj == NULL || !obj->IsActive)
++        return;
++
++    HousesType h = obj->Owner();
++    const char* owner = "None";
++    if (h != HOUSE_NONE) {
++        owner = HouseTypeClass::As_Reference(h).IniName;
++    }
++
++    CELL cell = Coord_Cell(obj->Coord);
++    int cx = Cell_X(cell);
++    int cy = Cell_Y(cell);
++#ifdef MEGAMAPS
++    int oldcell = cy * 64 + cx; /* back into the 64-wide space the INI uses */
++#else
++    int oldcell = cell;
++#endif
++
++    CELL ccell = Coord_Cell(obj->Center_Coord());
++
++    const char* mission = "-";
++    if (obj->Is_Techno()) {
++        mission = MissionClass::Mission_Name(((TechnoClass*)obj)->Get_Mission());
++    }
++
++    /*
++    **	CNC3D geometry block. The renderer needs three things the old dump did not carry:
++    **
++    **	  lx/ly     the exact lepton position (256 leptons per cell), so moving units are not
++    **	            snapped to cell centres and so sub-cell placement is honest.
++    **	  fw/fh     the footprint in cells. For buildings this comes straight out of
++    **	            BuildingTypeClass::Width()/Height(), i.e. the BSIZE_* declared in bdata.cpp.
++    **	            Everything else occupies its own cell, so 1x1.
++    **	  face      PrimaryFacing (0..255, 0 = north, increasing clockwise) and, where the type
++    **	            has a turret, the secondary/turret facing. Structures carry the facing the
++    **	            INI gave them.
++    */
++    COORD_COMPOSITE cc;
++    cc.Coord = obj->Coord;
++    int lx = (int)cc.Sub.X.Raw;
++    int ly = (int)cc.Sub.Y.Raw;
++
++    cc.Coord = obj->Center_Coord();
++    int clx = (int)cc.Sub.X.Raw;
++    int cly = (int)cc.Sub.Y.Raw;
++
++    int fw = 1;
++    int fh = 1;
++    if (obj->What_Am_I() == RTTI_BUILDING) {
++        BuildingClass* b = (BuildingClass*)obj;
++        fw = b->Class->Width();
++        fh = b->Class->Height();
++    }
++
++    int face = -1;
++    int tface = -1;
++    if (obj->Is_Techno()) {
++        face = (int)(unsigned char)((TechnoClass*)obj)->PrimaryFacing.Current();
++    }
++    if (obj->What_Am_I() == RTTI_UNIT) {
++        tface = (int)(unsigned char)((UnitClass*)obj)->SecondaryFacing.Current();
++    } else if (obj->What_Am_I() == RTTI_AIRCRAFT) {
++        tface = (int)(unsigned char)((AircraftClass*)obj)->SecondaryFacing.Current();
++    }
++
++    /*
++    **	CNC3D: is this object selected BY THE LOCAL PLAYER right now. The renderer draws its
++    **	selection brackets from this field rather than from a list of its own, so what the
++    **	player sees bracketed is by construction what the engine will actually order about.
++    **	IsSelectedMask is the multiplayer-safe form; IsSelected alone is only maintained in
++    **	GAME_NORMAL (see ObjectClass::Set_Selected_By_Player, object.cpp:1619).
++    */
++    int selected = 0;
++    if (PlayerPtr != NULL && PlayerPtr->Class != NULL) {
++        selected = (obj->IsSelectedMask & (1 << (int)PlayerPtr->Class->House)) ? 1 : 0;
++    }
++
++    /*
++    **	CNC3D flash. FlasherClass is a base of TechnoClass (techno.h:52).
++    **	TechnoClass::Clicked_As_Target (techno.cpp:1871) sets FlashCount to 7 on the
++    **	object a MegaMission is aimed at (event.cpp:586); FlasherClass::Process
++    **	(flasher.cpp:78), run once a tick from TechnoClass::AI (techno.cpp:2053),
++    **	decrements it and lights IsBlushing on the ODD values, so the object blushes on
++    **	three alternating ticks out of seven. 1995 draws it by swapping the remap table
++    **	for Map.FadingLight (techno.cpp:3630 -> house.cpp:2190), a 33% fade toward white
++    **	built at display.cpp:489; the cartridge does the same thing with a palette, its
++    **	Remap_Table at RAM 0x80044E08 returning selector 0x80000001 and the resident
++    **	selector at RAM 0x80055D08 loading the all-white TLUT at ROM 0x99330.
++    **
++    **	NOT A DAMAGE FLASH, and the difference matters: nothing in this engine sets
++    **	FlashCount on Take_Damage. It is the "you have been targeted" blush. `blush` is
++    **	the drawn state and `flash` the counter behind it, both exported so a gate can
++    **	assert the whole seven-tick envelope rather than only the lit frames.
++    */
++    int blush = 0;
++    int flash = 0;
++    if (obj->Is_Techno()) {
++        TechnoClass* flasher = (TechnoClass*)obj;
++        blush = flasher->IsBlushing ? 1 : 0;
++        flash = (int)flasher->FlashCount;
++    }
++
++    /*
++    **	navcell/tarcell: where this object has been ordered to go and what it has been
++    **	ordered to shoot, -1 for neither. The renderer draws the move waypoint flag from
++    **	navcell, and a harness can prove an order landed without parsing SEL| lines.
++    */
++    int navcell = -1;
++    int tarcell = -1;
++    if (obj->What_Am_I() == RTTI_INFANTRY || obj->What_Am_I() == RTTI_UNIT || obj->What_Am_I() == RTTI_AIRCRAFT) {
++        FootClass* foot = (FootClass*)obj;
++        if (Target_Legal(foot->NavCom))
++            navcell = (int)::As_Cell(foot->NavCom);
++    }
++    if (obj->Is_Techno()) {
++        TechnoClass* techno = (TechnoClass*)obj;
++        if (Target_Legal(techno->TarCom))
++            tarcell = (int)::As_Cell(techno->TarCom);
++    }
++
++    /*
++    **	CNC3D combat presentation. A dying infantryman is NOT deleted at the moment of
++    **	death: Take_Damage() assigns a death Do (DO_GUN_DEATH etc., infantry.cpp) and the
++    **	object stays in the heap playing that animation until Doing_AI() reaches the last
++    **	stage and calls Delete_This(). The renderer therefore needs three more facts to
++    **	draw him falling instead of standing: which Do he is in, which stage of it, and a
++    **	pre-digested "is this one of the death Dos" flag so the renderer does not mirror
++    **	the DoType enum.
++    */
++    int doing = -1;
++    int dostage = -1;
++    int dying = 0;
++    int makecnt = -1;
++    /*
++    **	CNC3D door presentation. TechnoClass derives from DoorClass, and the war factory
++    **	drives its door through it (Mission_Unload: Open_Door(2, 11), so Stages == 10 and
++    **	Door_Stage() runs 0..9 out and 9..0 back). The N64's own war-factory draw arm is
++    **	`clipFrame = Door_Stage() * (59/9)`, i.e. it maps exactly those ten stages onto
++    **	clip frames 0..59 -- so this is the one fact the renderer cannot animate the door
++    **	without. -1 for anything that is not a building.
++    */
++    int doorstage = -1;
++    /*
++    **	CNC3D SAM presentation. MissionClass::Status is the mission state machine's own
++    **	step, and the N64's SAM-site draw arm (RAM 0x8003DE24) branches on it directly:
++    **	states 2, 3 and 6 (SAM_READY, SAM_FIRING, SAM_LOCKING) draw the launcher TRACKING,
++    **	from PrimaryFacing; every other state draws it rising or lowering, from the stage
++    **	counter Mission_Attack writes by hand. Without this byte the renderer cannot tell
++    **	the two families apart. -1 for anything that is not a building.
++    */
++    int status = -1;
++    if (obj->What_Am_I() == RTTI_INFANTRY) {
++        InfantryClass* inf = (InfantryClass*)obj;
++        doing = (int)inf->Doing;
++        dostage = inf->Fetch_Stage();
++        if (inf->Doing == DO_PUNCH_DEATH || inf->Doing == DO_KICK_DEATH
++            || (inf->Doing >= DO_GUN_DEATH && inf->Doing <= DO_FIRE_DEATH)) {
++            dying = 1;
++        }
++    }
++
++    /*
++    **	CNC3D construction presentation. For a building, `doing` is its BState and
++    **	`dostage` its Fetch_Stage(). While BState == BSTATE_CONSTRUCTION the 1995 draw
++    **	(building.cpp Draw_It) shows MAKE.SHP frame Fetch_Stage() -- REVERSED when
++    **	Mission == MISSION_DECONSTRUCTION (selling), which the renderer can see from
++    **	the mission field already exported above. makecnt is Anims[CONSTRUCTION].Count,
++    **	i.e. Get_Build_Frame_Count(MAKE.SHP) as this engine loaded it, so the renderer
++    **	can reverse and clamp against the ENGINE's count rather than trusting its own
++    **	pack to agree.
++    */
++    if (obj->What_Am_I() == RTTI_BUILDING) {
++        BuildingClass* bld = (BuildingClass*)obj;
++        doing = (int)bld->BState;
++        dostage = bld->Fetch_Stage();
++        makecnt = bld->Class->Anims[BSTATE_CONSTRUCTION].Count;
++        doorstage = bld->Door_Stage();
++        status = (int)bld->Status;
++    }
++
++    /*
++    **	dimw is ObjectTypeClass::Dimensions' WIDTH in DOS pixels. The N64 health bar is
++    **	sized from exactly this: its producer (RAM 0x801D0854) calls the same virtual and
++    **	computes totalLen = (w << 8) / 24 leptons, i.e. w/24 of a cell. It cannot be
++    **	hardcoded on our side because for units it is derived at RUNTIME from the SHP art
++    **	(udata.cpp: MaxSize = MAX(largest, 8) out of Get_Build_Frame_Width, then
++    **	MaxSize - MaxSize/4), so the renderer has no way to know it. Buildings and
++    **	infantry are formulaic, but exporting one field for everything is simpler than
++    **	three rules and cannot drift.
++    */
++    int dimw = 0, dimh = 0;
++    obj->Class_Of().Dimensions(dimw, dimh);
++
++    /*
++    **	CNC3D targeting. tcx/tcy is Coord_Cell(Target_Coord()) -- the cell the ENGINE files
++    **	this object under when something is ordered to shoot it. For a BUILDING that is not
++    **	the anchor cell x/y above, and that difference is the whole reason this field exists.
++    **
++    **	x/y is Coord_Cell(Coord), the top-left cell of the footprint RECTANGLE.
++    **	BuildingClass::Target_Coord (building.cpp:3439) starts at CenterOffset[Class->Size]
++    **	and, when that cell is not in Occupy_List(), steps S then E then SE until it finds
++    **	one that is. For fifteen structure types the anchor cell is not in the OccupyList at
++    **	all -- bdata.cpp:137 ListHand = {MCW, MCW+1, MCW*2+1} and bdata.cpp:150
++    **	List010111000 = {1, MCW, MCW+1, MCW+2} (PROC) neither contain offset 0 -- so the
++    **	engine has NOTHING filed at x/y, Best_Object_Action answers ACTION_MOVE on bare
++    **	ground, and an attack order aimed there is silently turned into a move. That is why
++    **	the Hand of Nod and the Refinery ignore attack orders over most of their silhouette
++    **	while the Construction Yard and the Power Plant (List32 and List1011, both of which
++    **	DO contain offset 0) work.
++    **
++    **	Non-buildings carry their own anchor cell here: they occupy exactly the cell
++    **	Coord_Cell(Coord) names, so x/y is already the cell the engine files them under and
++    **	tcx/tcy needs no kind test on the reading side.
++    */
++    int tcx = cx;
++    int tcy = cy;
++    if (obj->What_Am_I() == RTTI_BUILDING) {
++        CELL tcell = Coord_Cell(((BuildingClass*)obj)->Target_Coord());
++        tcx = Cell_X(tcell);
++        tcy = Cell_Y(tcell);
++    }
++
++    /*
++    **	CNC3D pip row. The console draws these from its own copy of exactly this
++    **	arithmetic: the per-object overlay arm at RAM 0x801D0A60 calls Draw_Pips
++    **	(RAM 0x801D4530 / ROM 0x176320), which takes the count from the object's
++    **	Pip_Count virtual and the maximum from the TYPE's Max_Pips virtual. One field pair
++    **	therefore covers four separate readouts, because the engine already routes them
++    **	through one function:
++    **
++    **	  harvester tiberium   UnitClass::Pip_Count (unit.cpp:4259) -> IsToHarvest ->
++    **	                       Fixed_To_Cardinal(FULL_LOAD_CREDITS/100, Tiberium_Load()),
++    **	                       so 0..7 out of UnitTypeClass::Max_Pips == 7.
++    **	  orca ammo            AircraftClass::Pip_Count (aircraft.cpp:2972) -> Ammo ->
++    **	                       Fixed_To_Cardinal(Max_Pips(), Cardinal_To_Fixed(MaxAmmo,
++    **	                       Ammo)), floored at 1, out of AircraftTypeClass::Max_Pips == 5.
++    **	  silo/refinery store  BuildingClass::Pip_Count (building.cpp:4975) ->
++    **	                       Fixed_To_Cardinal(Max_Pips(), House->Tiberium_Fraction()),
++    **	                       i.e. the OWNING HOUSE's total, out of Bound(Capacity/100,0,10).
++    **	  transport occupancy  either Pip_Count arm's IsTransporter branch -> How_Many().
++    **
++    **	The three ROM addresses above are the decode pass's, carried here rather
++    **	than re-derived: what was checked HERE is the C++ side, which is the half this
++    **	function actually calls.
++    **
++    **	EXPORT ONLY. Nothing is drawn from this yet: the cartridge's pip ART is unread ROM
++    **	(the type-8 2-D command its Draw_Pips enqueues at 0x8004B638 has not been followed
++    **	to its consumer), so what the row looks like is a project decision, recorded
++    **	as a known gap. Exporting the numbers now is what lets that decision be made
++    **	without also having to re-derive the arithmetic.
++    **
++    **	All three arms are const and free of side effects, and none of them adds a NULL
++    **	dereference this function did not already have: BuildingClass::Pip_Count reads
++    **	House->..., and TechnoClass::Owner (techno.cpp:1850) returns House->Class->House
++    **	and is called unconditionally at the top of this function, so anything reaching
++    **	here has a house. Cardinal_To_Fixed guards base == 0 (common/misc.cpp:18), so an
++    **	empty house or a zero-capacity type reads 0 rather than dividing.
++    **
++    **	Infantry and everything without a store or a magazine report 0/0 --
++    **	ObjectTypeClass::Max_Pips (object.cpp:152) returns 0 -- and a reader must SKIP the
++    **	row on maxpips == 0 rather than draw an empty one.
++    */
++    int pips = 0;
++    int maxpips = obj->Class_Of().Max_Pips();
++    if (obj->Is_Techno()) {
++        pips = ((TechnoClass*)obj)->Pip_Count();
++    }
++
++    /*
++    **	heapid is the object's slot in its own TFixedIHeapClass pool (Infantry.ID(obj) and
++    **	friends). It is stable for the whole lifetime of the object, unlike the position in
++    **	the active list, which compacts whenever something dies. The renderer needs a stable
++    **	handle to carry per-unit animation phase across ticks.
++    */
++    /*
++    **	CNC3D: HOW HIGH IT IS FLYING. AircraftClass::Altitude (aircraft.h:254), in the same
++    **	leptons everything else here uses. Zero for every other heap, so a reader can add
++    **	it unconditionally: the cartridge does exactly that, lifting the health bar and the
++    **	pip row by Altitude*10 for RTTI_AIRCRAFT and by nothing for anything else
++    **	(ROM 0x1727B8 and 0x17645C). Without it an Orca's strip draws on the ground under
++    **	the aircraft rather than beside it.
++    */
++    int alt = 0;
++    if (obj->What_Am_I() == RTTI_AIRCRAFT) {
++        alt = ((AircraftClass*)obj)->Altitude;
++    }
++
++    printf("OBJ|%s|%s|%s|newcell=%d|x=%d|y=%d|inicell=%d|centercell=%d|str=%d|max=%d|limbo=%d|down=%d|mission=%s"
++           "|lx=%d|ly=%d|clx=%d|cly=%d|fw=%d|fh=%d|face=%d|tface=%d|id=%d"
++           "|sel=%d|nav=%d|tar=%d|doing=%d|dostage=%d|dying=%d|makecnt=%d|dimw=%d|door=%d|status=%d"
++           "|blush=%d|flash=%d|tcx=%d|tcy=%d|pips=%d|maxpips=%d|alt=%d\n",
++           kind,
++           obj->Class_Of().IniName,
++           owner,
++           (int)cell,
++           cx,
++           cy,
++           oldcell,
++           (int)ccell,
++           (int)obj->Strength,
++           (int)obj->Class_Of().MaxStrength,
++           (int)obj->IsInLimbo,
++           (int)obj->IsDown,
++           mission ? mission : "-",
++           lx,
++           ly,
++           clx,
++           cly,
++           fw,
++           fh,
++           face,
++           tface,
++           heapid,
++           selected,
++           navcell,
++           tarcell,
++           doing,
++           dostage,
++           dying,
++           makecnt,
++           dimw,
++           doorstage,
++           status,
++           blush,
++           flash,
++           tcx,
++           tcy,
++           pips,
++           maxpips,
++           alt);
++}
++
++extern "C" __declspec(dllexport) int __cdecl CNC3D_Dump_Objects(void)
++{
++    int total = 0;
++
++    printf("OBJDUMP-BEGIN heaps: Infantry=%d Units=%d Buildings=%d Terrains=%d Aircraft=%d Houses=%d\n",
++           Infantry.Count(),
++           Units.Count(),
++           Buildings.Count(),
++           Terrains.Count(),
++           Aircraft.Count(),
++           Houses.Count());
++
++    for (int i = 0; i < Infantry.Count(); i++) {
++        InfantryClass* p = Infantry.Ptr(i);
++        CNC3D_Print_One("INFANTRY", p, Infantry.ID(p));
++        total++;
++    }
++    for (int i = 0; i < Units.Count(); i++) {
++        UnitClass* p = Units.Ptr(i);
++        CNC3D_Print_One("UNIT", p, Units.ID(p));
++        total++;
++    }
++    for (int i = 0; i < Buildings.Count(); i++) {
++        BuildingClass* p = Buildings.Ptr(i);
++        CNC3D_Print_One("BUILDING", p, Buildings.ID(p));
++        total++;
++    }
++    for (int i = 0; i < Terrains.Count(); i++) {
++        TerrainClass* p = Terrains.Ptr(i);
++        CNC3D_Print_One("TERRAIN", p, Terrains.ID(p));
++        total++;
++    }
++    /*
++    **	CNC3D: THE AIRCRAFT HEAP, which this dump walked past until v0.6.0.
++    **
++    **	Every other heap was here from the first version and this one never was, so no
++    **	aircraft of any kind had ever reached the renderer: an Orca built on a helipad was
++    **	simulated and invisible, the Airstrike's A-10s arrived and were invisible, a
++    **	Chinook could not be given a CARGO| line because nothing could resolve the
++    **	transport, and the pip row could not show Orca ammo. Four separate symptoms, one
++    **	missing loop.
++    **
++    **	CNC3D_Print_One takes an ObjectClass*, so nothing else here needed changing; the
++    **	one field aircraft need that the others do not is alt=, added above.
++    */
++    for (int i = 0; i < Aircraft.Count(); i++) {
++        AircraftClass* p = Aircraft.Ptr(i);
++        CNC3D_Print_One("AIRCRAFT", p, Aircraft.ID(p));
++        total++;
++    }
++
++    /*
++    **	CNC3D transport presentation. A unit riding a transport is neither deleted nor
++    **	moved: CargoClass::Attach (cargo.cpp:82) calls object->Limbo(), which unselects it,
++    **	takes it off the map layer and sets IsInLimbo -- but never touches Coord. A
++    **	reinforcement passenger was never Unlimbo'd at all (reinf.cpp attaches the cargo and
++    **	places only the transport), so it still carries the 0xFFFFFFFF the ObjectClass
++    **	constructor left there (object.cpp:281) and its own OBJ| line reports cell 127,127.
++    **	That OBJ| line is real, but its POSITION is meaningless; limbo=1 already says so.
++    **
++    **	The cargo hold is a one-way chain -- CargoClass::CargoHold, then ObjectClass::Next --
++    **	with no back pointer from passenger to transport, so the link can only be exported
++    **	from the transport end. One line per passenger, in hold order, which IS the order the
++    **	1995 renderer draws them in (UnitClass::Draw_It, unit.cpp:2255, walks u->Next):
++    **
++    **	  CARGO|<tid>|<ttype>|<slot>|<kind>|<id>|<type>
++    **
++    **	  tid    the transport's heap id, matching its own OBJ| line (kind is always UNIT)
++    **	  ttype  the transport's IniName, because the 1995 draw is TYPE GATED: Draw_It
++    **	         renders piggyback cargo for `*this == UNIT_HOVER` ONLY. An APC's
++    **	         passengers were not drawn in 1995 and must not be drawn now.
++    **	  slot   index in the hold, 0..How_Many()-1. The DOS draw offsets passenger N by
++    **	         Coord + 0xFF80FF80 + StoppingCoordAbs[N] (const.cpp:56), i.e. a quincunx
++    **	         of (0,0) and (+/-64,+/-64) leptons about the transport, unrotated.
++    **	  kind   the passenger's RTTI name, INFANTRY or UNIT, so the renderer knows which
++    **	         heap its id indexes; OTHER for anything else (nothing else can board today).
++    **	  id     the passenger's heap id, i.e. the OBJ| line the renderer already parsed.
++    **	  type   the passenger's IniName, so a dropped OBJ| line is still diagnosable.
++    **
++    **	  tkind  which heap the TRANSPORT's own id indexes. Appended in v0.6.1 and last on
++    **	         the line on purpose, so a reader that predates it still parses the six
++    **	         fields it knows and simply assumes UNIT, which is what every line said
++    **	         before aircraft could carry anything.
++    **
++    **	Aircraft transports (the Chinook) hold cargo through the same CargoClass. Until
++    **	v0.6.0 the Aircraft heap was not exported at all, so their CARGO| lines would have
++    **	named a transport nothing could resolve and none were emitted. The heap is exported
++    **	now, so they are: the loop below runs over Units AND Aircraft.
++    */
++    for (int pass = 0; pass < 2; pass++) {
++        const int ntrans = pass ? Aircraft.Count() : Units.Count();
++        for (int i = 0; i < ntrans; i++) {
++        FootClass* t = pass ? (FootClass*)Aircraft.Ptr(i) : (FootClass*)Units.Ptr(i);
++        const int tid = pass ? Aircraft.ID((AircraftClass*)t) : Units.ID((UnitClass*)t);
++        const char* tkind = pass ? "AIRCRAFT" : "UNIT";
++        if (t == NULL || !t->IsActive || !t->Is_Something_Attached())
++            continue;
++        int slot = 0;
++        FootClass* c = t->Attached_Object();
++        while (c != NULL) {
++            const char* ckind = "OTHER";
++            int cid = -1;
++            switch (c->What_Am_I()) {
++            case RTTI_INFANTRY:
++                ckind = "INFANTRY";
++                cid = Infantry.ID((InfantryClass*)c);
++                break;
++            case RTTI_UNIT:
++                ckind = "UNIT";
++                cid = Units.ID((UnitClass*)c);
++                break;
++            default:
++                break;
++            }
++            printf("CARGO|%d|%s|%d|%s|%d|%s|%s\n",
++                   tid,
++                   t->Class_Of().IniName,
++                   slot,
++                   ckind,
++                   cid,
++                   c->Class_Of().IniName,
++                   tkind);
++            c = (FootClass*)c->Next;
++            slot++;
++        }
++        }
++    }
++
++    /*
++    **	CNC3D combat presentation: the Anims heap IS the engine's own effect layer --
++    **	muzzle flashes (ANIM_GUN_N/ANIM_MUZZLE_FLASH, spawned by TechnoClass::Fire_At),
++    **	projectile impacts (ANIM_PIFF..., spawned by BulletClass on detonation) and
++    **	vehicle death explosions (ANIM_FRAG1/ANIM_FBALL1, UnitClass::Take_Damage).
++    **	One EFX|ANIM line per live anim:
++    **	  type    AnimType enum value (defines.h:1405)
++    **	  name    AnimTypeClass IniName, the DOS art name ("PIFF", "FBALL1", "GUNFIRE")
++    **	  lx/ly   Center_Coord in absolute leptons (256 per cell), same space as OBJ lx
++    **	  stage   the private StageClass counter via the CNC3D_Stage() accessor; the
++    **	          engine draws shape (Start + stage) of Stages total
++    **	  attref  heap id of the techno this anim rides (muzzle flashes attach to their
++    **	          shooter and follow it), -1 when free-standing; attkind = its RTTI
++    */
++    for (int i = 0; i < Anims.Count(); i++) {
++        AnimClass* a = Anims.Ptr(i);
++        if (a == NULL || !a->IsActive || a->IsInLimbo)
++            continue;
++        const AnimTypeClass& c = (const AnimTypeClass&)a->Class_Of();
++        COORD_COMPOSITE cc;
++        cc.Coord = a->Center_Coord();
++        int attref = -1;
++        int attkind = -1;
++        if (a->Object != NULL && a->Object->IsActive) {
++            attkind = (int)a->Object->What_Am_I();
++            switch (a->Object->What_Am_I()) {
++            case RTTI_INFANTRY:
++                attref = Infantry.ID((InfantryClass*)a->Object);
++                break;
++            case RTTI_UNIT:
++                attref = Units.ID((UnitClass*)a->Object);
++                break;
++            case RTTI_BUILDING:
++                attref = Buildings.ID((BuildingClass*)a->Object);
++                break;
++            default:
++                break;
++            }
++        }
++        /*
++        **	CNC3D biggest: AnimTypeClass::Biggest, the frame at which the animation is at
++        **	its largest (adata.cpp). The renderer needs it for the one class of anim the
++        **	engine cannot count frames for -- an art-less one, where Stages is 0 and
++        **	AnimClass::Stage never advances, which is every FLAME-* the flamethrower
++        **	raises. Without it a continuous source emits once and stops.
++        */
++        printf("EFX|ANIM|id=%d|type=%d|name=%s|lx=%d|ly=%d|stage=%d|start=%d|stages=%d|"
++               "loops=%d|size=%d|ground=%d|attref=%d|attkind=%d|owner=%d|biggest=%d\n",
++               Anims.ID(a),
++               (int)(AnimType)*a,
++               c.IniName,
++               (int)cc.Sub.X.Raw,
++               (int)cc.Sub.Y.Raw,
++               a->CNC3D_Stage(),
++               c.Start,
++               c.Stages,
++               (int)a->Loops,
++               c.Size,
++               (int)c.IsGroundLayer,
++               attref,
++               attkind,
++               (int)a->OwnerHouse,
++               (int)c.Biggest);
++        total++;
++    }
++
++    /*
++    **	Bullets in flight. Small-arms rounds are typed invisible (invis=1, e.g. both
++    **	"50cal" types) and the DOS game never drew them; the renderer must honour the
++    **	flag. Visible ones ("120mm", "Dragon", "SSM"...) are drawn at lx/ly. face is
++    **	PrimaryFacing 0..255 (0 = north, clockwise); arcing grenades/napalm also carry
++    **	their FlyClass height in alt (leptons above ground).
++    */
++    for (int i = 0; i < Bullets.Count(); i++) {
++        BulletClass* b = Bullets.Ptr(i);
++        if (b == NULL || !b->IsActive || b->IsInLimbo)
++            continue;
++        COORD_COMPOSITE cc;
++        cc.Coord = b->Center_Coord();
++        printf("EFX|BULLET|id=%d|type=%d|name=%s|lx=%d|ly=%d|face=%d|alt=%d|invis=%d|"
++               "arcing=%d|homing=%d\n",
++               Bullets.ID(b),
++               (int)(BulletType)*b,
++               b->Class->IniName,
++               (int)cc.Sub.X.Raw,
++               (int)cc.Sub.Y.Raw,
++               (int)(unsigned char)b->PrimaryFacing.Current(),
++               b->CNC3D_Altitude(),
++               (int)b->Class->IsInvisible,
++               (int)b->Class->IsArcing,
++               (int)b->Class->IsHoming);
++        total++;
++    }
++
++    for (int i = 0; i < Houses.Count(); i++) {
++        HouseClass* hp = Houses.Ptr(i);
++        if (hp == NULL || !hp->IsActive)
++            continue;
++        /* tiberium = harvested funds in storage (HouseClass::Tiberium); spendable
++           money is credits + tiberium, which is what the sidebar counter shows. */
++        printf("HOUSE|%s|credits=%d|human=%d|player=%d|units=%d|buildings=%d|tiberium=%d|capacity=%d\n",
++               hp->Class->IniName,
++               (int)hp->Credits,
++               (int)hp->IsHuman,
++               (int)(hp == PlayerPtr),
++               (int)hp->CurUnits,
++               (int)hp->CurBuildings,
++               (int)hp->Tiberium,
++               (int)hp->Capacity);
++    }
++
++    /*
++    **	CNC3D tiberium presentation. The renderer draws tiberium from the engine's
++    **	own cell table: one line per cell whose Overlay is a tiberium patch, with
++    **	OverlayData (the growth stage the DOS draw uses as its frame). x/y are in
++    **	the same 64-wide cell space as the OBJ lines' x/y fields.
++    */
++    for (int cell = 0; cell < MAP_CELL_TOTAL; cell++) {
++        const CellClass& c = Map[(CELL)cell];
++        if (c.Overlay >= OVERLAY_TIBERIUM1 && c.Overlay <= OVERLAY_TIBERIUM12) {
++#ifdef MEGAMAPS
++            int cx = Cell_X((CELL)cell);
++            int cy = Cell_Y((CELL)cell);
++#else
++            int cx = cell % 64;
++            int cy = cell / 64;
++#endif
++            printf("TIB|%d|%d|%d|%d\n", cx, cy,
++                   (int)(c.Overlay - OVERLAY_TIBERIUM1), (int)c.OverlayData);
++        }
++    }
++
++    /*
++    **	CNC3D wall presentation. Walls are terrain OVERLAY cells, not techno objects, so
++    **	they live in none of the heaps the OBJ| lines above walk -- the same gap tiberium
++    **	had before TIB| landed. One line per wall cell:
++    **
++    **	  WALL|<x>|<y>|<name>|<kind>|<icon>|<dmg>
++    **
++    **	  x/y   cell coordinates in the same 64-wide space as the OBJ| and TIB| lines.
++    **	  name  the OverlayTypeClass IniName ("SBAG", "CYCL", "BRIK", "BARB", "WOOD").
++    **	  kind  Overlay - OVERLAY_SANDBAG_WALL: SBAG=0 CYCL=1 BRIK=2 BARB=3 WOOD=4. The
++    **	        five wall overlays are contiguous (defines.h:929-933) and this file already
++    **	        relies on that range for IsSellable at line ~5953.
++    **	  icon  OverlayData & 0x0F, the 4-bit CONNECTIVITY nibble the engine itself computes
++    **	        in CellClass::Wall_Update (cell.cpp:1406). Its _offsets array is
++    **	        {FACING_N, FACING_E, FACING_S, FACING_W, FACING_NONE} and the inner loop
++    **	        (i = 0..3) does `icon |= 1 << i` for each adjacent cell carrying the SAME
++    **	        overlay, so
++    **	            bit0 = north, bit1 = east, bit2 = south, bit3 = west
++    **	        written back as (OverlayData & 0xFFF0) | icon (cell.cpp:1436). The renderer
++    **	        maps this 16-way nibble onto the cartridge's four authored wall meshes
++    **	        (straight / L / T / cross) plus a rotation.
++    **	  dmg   OverlayData >> 4, the damage stage CellClass::Reduce_Wall adds 16 per level
++    **	        for (cell.cpp:1562). The cell is removed outright once dmg reaches the
++    **	        type's DamageLevels (SBAG/BARB/WOOD 1, CYCL 2, BRIK 3 -- odata.cpp), so the
++    **	        emitted range is 0..DamageLevels-1 and a wall on screen is never fully
++    **	        destroyed.
++    **
++    **	Not added to `total`: TIB| is not either, and OBJDUMP-END's total counts objects.
++    */
++    for (int cell = 0; cell < MAP_CELL_TOTAL; cell++) {
++        const CellClass& c = Map[(CELL)cell];
++        if (c.Overlay == OVERLAY_NONE)
++            continue;
++        const OverlayTypeClass& otype = OverlayTypeClass::As_Reference(c.Overlay);
++        if (!otype.IsWall)
++            continue;
++#ifdef MEGAMAPS
++        int cx = Cell_X((CELL)cell);
++        int cy = Cell_Y((CELL)cell);
++#else
++        int cx = cell % 64;
++        int cy = cell / 64;
++#endif
++        /*
++        **	CNC3D owner: which house BUILT this wall cell. CellClass::Owner (cell.h:131)
++        **	is HOUSE_NONE by default (cell.cpp:136) and is set only when a wall is placed
++        **	by a player (overlay.cpp:243), which is exactly the test the sell path makes
++        **	(house.cpp:4715). So a wall painted into a scenario's [OVERLAY] reports None
++        **	and is not sellable -- in 1995 either. Appended to the end of the line, so a
++        **	renderer that predates this field still parses the six it knows.
++        */
++        printf("WALL|%d|%d|%s|%d|%d|%d|%s\n",
++               cx,
++               cy,
++               otype.IniName,
++               (int)(c.Overlay - OVERLAY_SANDBAG_WALL),
++               (int)(c.OverlayData & 0x0F),
++               (int)(c.OverlayData >> 4),
++               (c.Owner == HOUSE_NONE)
++                   ? "None"
++                   : HouseTypeClass::As_Reference(c.Owner).IniName);
++    }
++
++    /*
++    **	CNC3D SMUDGES: the scorch marks, craters and building aprons.
++    **
++    **	  SMUDGE|<x>|<y>|<type>|<data>
++    **
++    **	A smudge is per-CELL state, not an object, exactly like the tiberium and the
++    **	walls above: CellClass carries `SmudgeType Smudge` and `unsigned char SmudgeData`
++    **	(cell.h:122). anim.cpp drops a random SCORCH1..6 under an explosion and a CRATER1
++    **	under a bigger one; building.cpp lays the BIB aprons under a structure. So this
++    **	is one more cell walk beside the two that are already here and nothing else.
++    **
++    **	  type  SmudgeType, 0..14: CRATER1..6, SCORCH1..6, BIB1..3. The renderer maps it
++    **	        onto the cartridge's own art index with art = (t <= 11) ? t + 4 : t - 11,
++    **	        which is the order the console's terrain loader reads the strips in.
++    **	  data  SmudgeData VERBATIM, and it is already the console's frame number:
++    **	        SmudgeClass::Mark computes `w + h * Class->Width` for the multi-cell BIBs
++    **	        and stacks craters by incrementing then clamping to 4 (smudge.cpp:212 and
++    **	        218-219), and the cartridge's own code at ROM 0x16D824 is byte for byte
++    **	        the same arithmetic. Nothing needs converting on the way out.
++    **
++    **	Not added to `total`, for the same reason TIB| and WALL| are not: OBJDUMP-END's
++    **	total counts OBJECTS, and a smudge is a property of the ground.
++    */
++    for (int cell = 0; cell < MAP_CELL_TOTAL; cell++) {
++        const CellClass& c = Map[(CELL)cell];
++        if (c.Smudge == SMUDGE_NONE)
++            continue;
++#ifdef MEGAMAPS
++        int sx = Cell_X((CELL)cell);
++        int sy = Cell_Y((CELL)cell);
++#else
++        int sx = cell % 64;
++        int sy = cell / 64;
++#endif
++        printf("SMUDGE|%d|%d|%d|%d\n", sx, sy, (int)c.Smudge, (int)c.SmudgeData);
++    }
++
++    /*
++    **	CNC3D start view. Scen.Views[0] is the scenario's own opening view cell
++    **	(scenarioini.cpp reads it from the INI; single player has no useful
++    **	HomeCellX/Y -- those are MultiplayerStartPositions). The renderer centres
++    **	its camera here ONCE, on the first dump; reprints are idempotent data.
++    */
++    printf("VIEW|%d|%d\n", (int)Cell_X(Scen.Views[0]), (int)Cell_Y(Scen.Views[0]));
++
++    printf("OBJDUMP-END total=%d frame=%d\n", total, (int)Frame);
++    fflush(stdout);
++    return total;
++}
++
++/**************************************************************************************************
++ * CNC3D_Get_View -- TEMPORARY INSTRUMENTATION (project CNC3D).
++ *
++ * Reports the engine's own tactical viewport. This is the coordinate space that
++ * CNC_Handle_Input's x1/y1/x2/y2 live in: DisplayClass::Pixel_To_Coord does
++ *
++ *    lepton_x = Pixel_To_Lepton(x - TacPixelX)      (24 screen pixels == 256 leptons == 1 cell)
++ *    coord    = TacticalCoord + XY_Coord(lepton_x, lepton_y)
++ *
++ * and rejects the click (returns coord 0) unless the lepton offsets are inside
++ * TacLeptonWidth/TacLeptonHeight, when IgnoreViewConstraints is false.
++ *
++ * out[] must have room for 11 ints.
++ **************************************************************************************************/
++extern "C" __declspec(dllexport) void __cdecl CNC3D_Get_View(int* out)
++{
++    if (out == NULL)
++        return;
++    out[0] = Map.TacPixelX;
++    out[1] = Map.TacPixelY;
++    out[2] = Map.TacLeptonWidth;
++    out[3] = Map.TacLeptonHeight;
++    out[4] = (int)Coord_X(Map.TacticalCoord);
++    out[5] = (int)Coord_Y(Map.TacticalCoord);
++    out[6] = Map.MapCellX;
++    out[7] = Map.MapCellY;
++    out[8] = Map.MapCellWidth;
++    out[9] = Map.MapCellHeight;
++    out[10] = DLLExportClass::Legacy_Render_Enabled() ? 1 : 0;
++}
++
++/**************************************************************************************************
++ * CNC3D_Cell_To_Pixel -- TEMPORARY INSTRUMENTATION (project CNC3D).
++ *
++ * Exact inverse of DisplayClass::Pixel_To_Coord for the centre of a cell. Returns false if
++ * the resulting pixel would be rejected by Pixel_To_Coord's view-constraint test, and also
++ * round-trips its own answer through Pixel_To_Coord so the caller is told the truth rather
++ * than a hopeful calculation.
++ **************************************************************************************************/
++extern "C" __declspec(dllexport) bool __cdecl CNC3D_Cell_To_Pixel(int cell_x, int cell_y, int* px, int* py)
++{
++    int lx = Cell_To_Lepton(cell_x) + (CELL_LEPTON_W / 2) - (int)Coord_X(Map.TacticalCoord);
++    int ly = Cell_To_Lepton(cell_y) + (CELL_LEPTON_H / 2) - (int)Coord_Y(Map.TacticalCoord);
++
++    int x = Lepton_To_Pixel(lx) + Map.TacPixelX;
++    int y = Lepton_To_Pixel(ly) + Map.TacPixelY;
++
++    if (px)
++        *px = x;
++    if (py)
++        *py = y;
++
++    /*
++    **	Round trip check. Pixel_To_Coord is what CNC_Handle_Input actually uses.
++    */
++    COORDINATE coord = Map.Pixel_To_Coord(x, y);
++    if (coord == 0)
++        return false;
++    return (Coord_Cell(coord) == XY_Cell(cell_x, cell_y));
++}
++
++/**************************************************************************************************
++ * CNC3D_Dump_Selection -- TEMPORARY INSTRUMENTATION (project CNC3D).
++ *
++ * Prints what the current player actually has selected, plus each selected object's
++ * NavCom / TarCom, so a move order can be proven to have reached the object and not
++ * merely to have been "sent".
++ **************************************************************************************************/
++extern "C" __declspec(dllexport) int __cdecl CNC3D_Dump_Selection(void)
++{
++    printf("SEL-BEGIN count=%d frame=%d\n", CurrentObject.Count(), (int)Frame);
++    for (int i = 0; i < CurrentObject.Count(); i++) {
++        ObjectClass* obj = CurrentObject[i];
++        if (obj == NULL)
++            continue;
++
++        const char* kind = "OTHER";
++        int heapid = -1;
++        switch (obj->What_Am_I()) {
++        case RTTI_INFANTRY:
++            kind = "INFANTRY";
++            heapid = Infantry.ID((InfantryClass*)obj);
++            break;
++        case RTTI_UNIT:
++            kind = "UNIT";
++            heapid = Units.ID((UnitClass*)obj);
++            break;
++        case RTTI_AIRCRAFT:
++            kind = "AIRCRAFT";
++            heapid = Aircraft.ID((AircraftClass*)obj);
++            break;
++        case RTTI_BUILDING:
++            kind = "BUILDING";
++            heapid = Buildings.ID((BuildingClass*)obj);
++            break;
++        default:
++            break;
++        }
++
++        int navcell = -1;
++        int tarcell = -1;
++        const char* mission = "-";
++        if (obj->What_Am_I() == RTTI_INFANTRY || obj->What_Am_I() == RTTI_UNIT
++            || obj->What_Am_I() == RTTI_AIRCRAFT) {
++            FootClass* foot = (FootClass*)obj;
++            if (Target_Legal(foot->NavCom))
++                navcell = (int)::As_Cell(foot->NavCom);
++        }
++        if (obj->Is_Techno()) {
++            TechnoClass* techno = (TechnoClass*)obj;
++            if (Target_Legal(techno->TarCom))
++                tarcell = (int)::As_Cell(techno->TarCom);
++            mission = MissionClass::Mission_Name(techno->Get_Mission());
++        }
++
++        printf("SEL|%s|%s|id=%d|cell=%d|x=%d|y=%d|mission=%s|navcell=%d|tarcell=%d\n",
++               kind,
++               obj->Class_Of().IniName,
++               heapid,
++               (int)Coord_Cell(obj->Coord),
++               Cell_X(Coord_Cell(obj->Coord)),
++               Cell_Y(Coord_Cell(obj->Coord)),
++               mission ? mission : "-",
++               navcell,
++               tarcell);
++    }
++    printf("SEL-END\n");
++    fflush(stdout);
++    return CurrentObject.Count();
++}
++
++/**************************************************************************************************
++ * CNC3D_Sel_Info -- TEMPORARY INSTRUMENTATION (project CNC3D).
++ *
++ * Machine readable version of one SEL| line, so a harness can watch a unit every single
++ * frame without drowning stdout. out[] needs room for 8 ints:
++ *   cell, cell_x, cell_y, lepton_x, lepton_y, mission, navcell, tarcell
++ * Returns false if there is no selected object at that index.
++ **************************************************************************************************/
++extern "C" __declspec(dllexport) bool __cdecl CNC3D_Sel_Info(int index, int* out)
++{
++    if (out == NULL || index < 0 || index >= CurrentObject.Count())
++        return false;
++    ObjectClass* obj = CurrentObject[index];
++    if (obj == NULL)
++        return false;
++
++    COORD_COMPOSITE cc;
++    cc.Coord = obj->Coord;
++
++    out[0] = (int)Coord_Cell(obj->Coord);
++    out[1] = Cell_X(Coord_Cell(obj->Coord));
++    out[2] = Cell_Y(Coord_Cell(obj->Coord));
++    out[3] = (int)cc.Sub.X.Raw;
++    out[4] = (int)cc.Sub.Y.Raw;
++    out[5] = obj->Is_Techno() ? (int)((TechnoClass*)obj)->Get_Mission() : -1;
++    out[6] = -1;
++    out[7] = -1;
++    if (obj->What_Am_I() == RTTI_INFANTRY || obj->What_Am_I() == RTTI_UNIT || obj->What_Am_I() == RTTI_AIRCRAFT) {
++        FootClass* foot = (FootClass*)obj;
++        if (Target_Legal(foot->NavCom))
++            out[6] = (int)::As_Cell(foot->NavCom);
++    }
++    if (obj->Is_Techno()) {
++        TechnoClass* techno = (TechnoClass*)obj;
++        if (Target_Legal(techno->TarCom))
++            out[7] = (int)::As_Cell(techno->TarCom);
++    }
++    return true;
++}
++
++extern "C" __declspec(dllexport) const char* __cdecl CNC3D_Mission_Name(int mission)
++{
++    return MissionClass::Mission_Name((MissionType)mission);
++}
++
++/**************************************************************************************************
++ * CNC3D_Probe_Object_At -- TEMPORARY INSTRUMENTATION (project CNC3D).
++ *
++ * Answers "what does the engine think is under these input pixels, and what action would
++ * the current selection take there". Pure query, changes nothing.
++ **************************************************************************************************/
++extern "C" __declspec(dllexport) int __cdecl CNC3D_Probe_Object_At(int x, int y)
++{
++    COORDINATE coord = Map.Pixel_To_Coord(x, y);
++    if (coord == 0) {
++        printf("PROBE|px=%d,%d|REJECTED (outside tactical view)\n", x, y);
++        fflush(stdout);
++        return -1;
++    }
++    CELL cell = Coord_Cell(coord);
++    ObjectClass* object = Map.Close_Object(coord);
++    ActionType action = ACTION_NONE;
++    if (CurrentObject.Count()) {
++        action = (object != NULL) ? Best_Object_Action(object) : Best_Object_Action(cell);
++    }
++    printf("PROBE|px=%d,%d|coord=%d,%d|cell=%d|cx=%d|cy=%d|obj=%s|action=%d\n",
++           x,
++           y,
++           (int)Coord_X(coord),
++           (int)Coord_Y(coord),
++           (int)cell,
++           Cell_X(cell),
++           Cell_Y(cell),
++           object ? object->Class_Of().IniName : "(none)",
++           (int)action);
++    fflush(stdout);
++    return (int)action;
++}
+diff --git a/tiberiandawn/startup.cpp b/tiberiandawn/startup.cpp
+index 8536cc9..070183c 100644
+--- a/tiberiandawn/startup.cpp
++++ b/tiberiandawn/startup.cpp
+@@ -12,6 +12,12 @@
+ // distributed with this program. You should have received a copy of the
+ // GNU General Public License along with permitted additional restrictions
+ // with this program. If not, see https://github.com/electronicarts/CnC_Remastered_Collection
++//
++// MODIFIED for C&C 3D in August 2026. This is not EA's original file.
++// The change is additive and does not alter the game simulation; the complete
++// diff against upstream is brain/patches/vanilla-cnc3d.patch, and NOTICE.md
++// lists every modified file.
++//
+ 
+ /* $Header:   F:\projects\c&c\vcs\code\startup.cpv   2.17   16 Oct 1995 16:48:12   JOE_BOSTIC  $ */
+ /***********************************************************************************************
+@@ -34,6 +40,7 @@
+  *   main -- Initial startup routine (preps library systems).                                  *
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
++#include "cnc3d_compat.h"   // CNC3D: Win32 shims for non-Windows builds
+ #include "function.h"
+ #include "common/ini.h"
+ #include "common/paths.h"

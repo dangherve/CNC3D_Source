@@ -1,0 +1,33 @@
+/* Windows resources for C&C3D.exe.
+ *
+ * The ICON is the same composed image the Mac .icns is made from, so the two platforms
+ * cannot drift into different emblems: tools/launchers/make_icon.py writes both from the
+ * cartridge's own GDI eagle medallion in one run. IDI_ICON1 is the conventional first
+ * icon id, and Explorer shows the lowest-numbered one, so this is the file's face.
+ *
+ * The version block is what Explorer's Properties tab reads. It is deliberately terse:
+ * the build number lives in VERSION and is stamped into game/cnc3d_build.h, and duplicating
+ * it here would be a second copy to forget, so this carries the name and not the number.
+ */
+IDI_ICON1 ICON "cnc3d.ico"
+
+1 VERSIONINFO
+FILEOS      0x40004L
+FILETYPE    0x1L
+{
+  BLOCK "StringFileInfo"
+  {
+    BLOCK "040904B0"
+    {
+      VALUE "CompanyName",     "Slipgate Ironworks"
+      VALUE "FileDescription", "C&C3D"
+      VALUE "InternalName",    "C&C3D"
+      VALUE "OriginalFilename","C&C3D.exe"
+      VALUE "ProductName",     "C&C3D"
+    }
+  }
+  BLOCK "VarFileInfo"
+  {
+    VALUE "Translation", 0x409, 1200
+  }
+}

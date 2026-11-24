@@ -80,3 +80,5 @@ game/*.o.tmp
 game/cnc3d_build.h
 
 !buildTools
+
+!.woodpecker

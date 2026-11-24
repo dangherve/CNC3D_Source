@@ -78,3 +78,5 @@ game/*.o.tmp
 
 # The build number header, written by tools/version.sh before every compile.
 game/cnc3d_build.h
+
+!buildTools
